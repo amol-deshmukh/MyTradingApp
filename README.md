@@ -31,6 +31,14 @@ point the URLs in `app/build.gradle.kts` at your machine's LAN IP.
 
 Each tab shows a connection pill (Live / Connecting / Reconnecting / Offline).
 
+## Screenshots
+
+| Markets | Stock detail | Portfolio | News (SSE) |
+|---|---|---|---|
+| <img src="docs/screenshots/markets.png" width="200"> | <img src="docs/screenshots/detail.png" width="200"> | <img src="docs/screenshots/portfolio.png" width="200"> | <img src="docs/screenshots/news.png" width="200"> |
+
+To regenerate, unlock a connected device and run `ANDROID_SERIAL=<serial> docs/capture-screenshots.sh`.
+
 ## Choosing a transport
 
 The choice follows two questions about the data:
@@ -137,6 +145,195 @@ data/remote/      TradingApi (REST), PriceStreamClient (WS), NewsStreamClient (S
 ```
 
 Manual DI: `TradingApplication` builds the OkHttp clients and the repository.
+
+### High level
+
+Unidirectional data flow (UI → ViewModel → Repository → network) with one repository caching
+everything as flows, and three transports to one backend.
+
+```mermaid
+flowchart LR
+    subgraph Device["Android app"]
+        UI["Compose UI<br/>Markets · Portfolio · Detail · News"]
+        VM["ViewModels<br/>StateFlow of UiState"]
+        Repo["TradingRepository<br/>in-memory cache, single source of truth"]
+        Api["TradingApi<br/>Retrofit"]
+        WS["PriceStreamClient<br/>OkHttp WebSocket"]
+        SSE["NewsStreamClient<br/>okhttp-sse"]
+        UI -- "user events" --> VM
+        VM -- "UiState" --> UI
+        VM --> Repo
+        Repo --> Api
+        Repo --> WS
+        Repo --> SSE
+    end
+    subgraph Server["mock-server/server.js :8080"]
+        R["REST /api/v1/*"]
+        W["WebSocket /ws/prices"]
+        S["SSE /sse/news"]
+        M[("In-memory market<br/>ticks every 1s")]
+        R --- M
+        W --- M
+        S --- M
+    end
+    Api <-- "request/response<br/>retry + Idempotency-Key" --> R
+    WS <-- "persistent socket<br/>snapshot + ticks, ping 15s" --> W
+    S -- "text/event-stream<br/>id / Last-Event-ID" --> SSE
+```
+
+### Low level: components
+
+Who owns what, which flows each ViewModel combines, and how each OkHttp client is tuned.
+Solid arrows are reads and calls; dotted arrows show which OkHttp client each network class uses,
+and which stream the News screen keeps open.
+
+```mermaid
+flowchart TB
+    subgraph DI["TradingApplication (manual DI)"]
+        base["baseClient<br/>connect 10s, read 15s, pool of 5"]
+        rest["restClient<br/>callTimeout 20s, logging in debug"]
+        wsc["wsClient<br/>readTimeout 0, ping 15s"]
+        ssec["sseClient<br/>readTimeout 30s"]
+        base --> rest
+        base --> wsc
+        base --> ssec
+    end
+
+    subgraph UI["MainActivity"]
+        life["repeatOnLifecycle(STARTED)<br/>streamPrices()"]
+        nav["NavHost<br/>Markets, Portfolio, News, StockDetail(symbol)"]
+    end
+
+    subgraph VMs["ViewModels: stateIn(WhileSubscribed 5s)"]
+        mvm["MarketsViewModel"]
+        pvm["PortfolioViewModel"]
+        dvm["StockDetailViewModel<br/>Idempotency-Key per order form"]
+        nvm["NewsViewModel<br/>runs streamNews() while collected"]
+    end
+
+    subgraph Repo["TradingRepository"]
+        stocks["stocks = combine(baseQuotes, liveQuotes)"]
+        details[("details")]
+        portfolio[("portfolio")]
+        live[("liveQuotes")]
+        news[("news + lastNewsEventId")]
+        conn[("connection, newsConnection")]
+        sf["singleFlight(key)<br/>one in-flight call per key, app scope"]
+    end
+
+    subgraph Remote["data/remote"]
+        api["TradingApi"]
+        retry["retryWithBackoff()<br/>IO, 408, 429, 5xx; Retry-After"]
+        psc["PriceStreamClient"]
+        nsc["NewsStreamClient"]
+        rc["reconnectingStream()<br/>backoff 1s to 30s + jitter"]
+    end
+
+    nav --> mvm & pvm & dvm & nvm
+    mvm --> stocks & conn
+    pvm --> portfolio & live & conn
+    dvm --> stocks & details & portfolio
+    nvm --> news & conn
+    life --> psc
+    stocks --> sf
+    details --> sf
+    portfolio --> sf
+    sf --> retry --> api
+    psc --> rc
+    nsc --> rc
+    nvm -.-> nsc
+    rest -.-> api
+    wsc -.-> psc
+    ssec -.-> nsc
+```
+
+### Low level: Markets load (stale-while-revalidate + live overlay)
+
+```mermaid
+sequenceDiagram
+    participant UI as MarketsScreen
+    participant VM as MarketsViewModel
+    participant Repo as TradingRepository
+    participant API as REST /api/v1/stocks
+    participant WS as WebSocket /ws/prices
+
+    UI->>VM: collect state
+    VM-->>UI: cached stocks (instant) or skeleton
+    VM->>Repo: refreshStocks()
+    Repo->>API: GET (singleFlight "stocks")
+    API-->>Repo: 503 + Retry-After: 1
+    Note over Repo: transient, so wait and retry
+    Repo->>API: GET (retry)
+    WS-->>Repo: snapshot (ts) to liveQuotes
+    API-->>Repo: stocks + asOf to baseQuotes
+    Note over Repo: seed liveQuotes only if asOf is newer than last tick
+    Repo-->>VM: stocks = base overlaid with live prices
+    VM-->>UI: MarketsUiState
+    loop every ~1s
+        WS-->>Repo: ticks
+        Repo-->>UI: prices update, row flashes
+    end
+```
+
+### Low level: safe order retry (Idempotency-Key)
+
+```mermaid
+sequenceDiagram
+    participant VM as StockDetailViewModel
+    participant Repo as TradingRepository
+    participant S as POST /api/v1/orders
+
+    VM->>VM: open order form, key K = UUID
+    VM->>Repo: placeOrder(BUY 5 AAPL, K)
+    Note over Repo: runs in app scope, survives leaving the screen
+    Repo->>S: POST, Idempotency-Key: K
+    S->>S: execute order, store result under K
+    S--xRepo: response lost (socket dropped)
+    Repo->>S: retry POST, same key K
+    S-->>Repo: 201 original fill, Idempotent-Replay: true
+    Repo-->>VM: OrderResponse, portfolio updated
+    Note over VM: changing the quantity creates a new key
+```
+
+### Low level: SSE connect, drop and resume
+
+```mermaid
+sequenceDiagram
+    participant VM as NewsViewModel
+    participant Repo as TradingRepository
+    participant C as NewsStreamClient
+    participant S as GET /sse/news
+
+    VM->>Repo: streamNews() (screen visible)
+    Repo->>C: events { lastNewsEventId }
+    C->>S: GET, Accept: text/event-stream
+    S-->>C: 200 + last 20 events (id 1..20)
+    C-->>Repo: Item(id) to prepend, de-dupe, lastNewsEventId = id
+    loop every 3-7s
+        S-->>C: id: 21, event: news, data: {...}
+    end
+    S-->>C: ": keep-alive" every 15s
+    S--xC: connection drops
+    C-->>Repo: Status(RECONNECTING)
+    Note over C: backoff + jitter
+    C->>S: GET, Last-Event-ID: 21
+    S-->>C: replay only ids 22+ from 50-item buffer
+    VM-xRepo: screen hidden for more than 5s, stream cancelled (OFFLINE)
+```
+
+### Low level: stream connection states (`Reconnect.kt`)
+
+```mermaid
+stateDiagram-v2
+    [*] --> CONNECTING
+    CONNECTING --> LIVE: onOpen
+    LIVE --> RECONNECTING: closed or failed (attempt < 3)
+    CONNECTING --> RECONNECTING: failed (attempt < 3)
+    RECONNECTING --> LIVE: onOpen, backoff resets
+    RECONNECTING --> OFFLINE: 3rd consecutive failure
+    OFFLINE --> RECONNECTING: after backoff (max 30s)
+    LIVE --> [*]: collector cancelled
+```
 
 ### Handling latency and failures
 
