@@ -91,3 +91,18 @@ data class PriceStreamMessage(
 )
 
 enum class ConnectionState { CONNECTING, LIVE, RECONNECTING, OFFLINE }
+
+@Serializable
+enum class NewsCategory { MARKET, EARNINGS, ANALYST, PRICE_ALERT }
+
+/** A news event pushed by the server over the SSE news stream. */
+@Serializable
+data class NewsItem(
+    val id: String,
+    val ts: Long,
+    val category: NewsCategory,
+    val headline: String,
+    val summary: String = "",
+    val symbol: String? = null,
+    val sentiment: Int = 0, // -1 negative, 0 neutral, +1 positive
+)

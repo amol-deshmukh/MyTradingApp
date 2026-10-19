@@ -23,6 +23,7 @@ android {
         // For a physical device, use your machine's LAN IP (or `adb reverse tcp:8080 tcp:8080` + localhost).
         buildConfigField("String", "API_BASE_URL", "\"http://10.0.2.2:8080/\"")
         buildConfigField("String", "WS_PRICES_URL", "\"ws://10.0.2.2:8080/ws/prices\"")
+        buildConfigField("String", "SSE_NEWS_URL", "\"http://10.0.2.2:8080/sse/news\"")
     }
 
     buildTypes {
@@ -40,6 +41,7 @@ android {
             matchingFallbacks += listOf("release")
             buildConfigField("String", "API_BASE_URL", "\"http://localhost:8080/\"")
             buildConfigField("String", "WS_PRICES_URL", "\"ws://localhost:8080/ws/prices\"")
+            buildConfigField("String", "SSE_NEWS_URL", "\"http://localhost:8080/sse/news\"")
         }
     }
     compileOptions {
@@ -69,6 +71,7 @@ dependencies {
     implementation(libs.retrofit)
     implementation(libs.retrofit.kotlinx.serialization)
     implementation(libs.okhttp)
+    implementation(libs.okhttp.sse)
     implementation(libs.okhttp.logging)
     implementation(libs.androidx.tracing.ktx)
     implementation(libs.androidx.profileinstaller)

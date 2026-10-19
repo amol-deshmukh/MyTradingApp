@@ -2,11 +2,14 @@ package com.example.myapplication.data
 
 import androidx.tracing.trace
 import com.example.myapplication.data.model.ConnectionState
+import com.example.myapplication.data.model.NewsItem
 import com.example.myapplication.data.model.OrderRequest
 import com.example.myapplication.data.model.OrderResponse
 import com.example.myapplication.data.model.Portfolio
 import com.example.myapplication.data.model.StockDetail
 import com.example.myapplication.data.model.StockQuote
+import com.example.myapplication.data.remote.NewsStreamClient
+import com.example.myapplication.data.remote.NewsStreamEvent
 import com.example.myapplication.data.remote.PriceStreamClient
 import com.example.myapplication.data.remote.StreamEvent
 import com.example.myapplication.data.remote.TradingApi
@@ -33,12 +36,14 @@ import kotlinx.coroutines.sync.withLock
  *    screens render cached data instantly and refresh in the background.
  *  - Live prices come from a WebSocket and are overlaid onto the REST data, so the slow REST
  *    calls only need to run once per screen, not on every price change.
+ *  - Market news arrives over Server-Sent Events and resumes from Last-Event-ID after a drop.
  *  - Identical in-flight requests are de-duplicated (one network call, many awaiters).
  *  - Idempotent calls are retried with backoff; orders use an Idempotency-Key so retries are safe.
  */
 class TradingRepository(
     private val api: TradingApi,
     private val priceStream: PriceStreamClient,
+    private val newsStream: NewsStreamClient,
     private val scope: CoroutineScope,
 ) {
     private val baseQuotes = MutableStateFlow<List<StockQuote>>(emptyList())
@@ -47,10 +52,17 @@ class TradingRepository(
     private val _portfolio = MutableStateFlow<Portfolio?>(null)
     private val _connection = MutableStateFlow(ConnectionState.OFFLINE)
     private val _lastPriceUpdate = MutableStateFlow<Long?>(null)
+    private val _news = MutableStateFlow<List<NewsItem>>(emptyList())
+    private val _newsConnection = MutableStateFlow(ConnectionState.OFFLINE)
+    @Volatile private var lastNewsEventId: String? = null
 
     val connection: StateFlow<ConnectionState> = _connection.asStateFlow()
     val lastPriceUpdate: StateFlow<Long?> = _lastPriceUpdate.asStateFlow()
     val portfolio: StateFlow<Portfolio?> = _portfolio.asStateFlow()
+
+    /** News feed, newest first. Kept across stream restarts so returning to the screen is instant. */
+    val news: StateFlow<List<NewsItem>> = _news.asStateFlow()
+    val newsConnection: StateFlow<ConnectionState> = _newsConnection.asStateFlow()
 
     /** REST list (ordering + names) with live WebSocket prices overlaid. */
     val stocks: Flow<List<StockQuote>> = combine(baseQuotes, liveQuotes) { base, live ->
@@ -110,6 +122,29 @@ class TradingRepository(
         }
     }
 
+    /**
+     * Keeps the news SSE stream open while the caller is active. Every reconnect sends the last
+     * event id seen, so the server replays only the items that were missed while disconnected.
+     */
+    suspend fun streamNews() {
+        try {
+            newsStream.events { lastNewsEventId }.collect { event ->
+                when (event) {
+                    is NewsStreamEvent.Status -> _newsConnection.value = event.state
+                    is NewsStreamEvent.Item -> {
+                        _news.update { list ->
+                            if (list.any { it.id == event.item.id }) list
+                            else (listOf(event.item) + list).take(MAX_NEWS_ITEMS)
+                        }
+                        event.eventId?.let { lastNewsEventId = it }
+                    }
+                }
+            }
+        } finally {
+            _newsConnection.value = ConnectionState.OFFLINE
+        }
+    }
+
     // --- request de-duplication -------------------------------------------------------------
 
     private val inFlightLock = Mutex()
@@ -131,6 +166,8 @@ class TradingRepository(
         return deferred.await()
     }
 }
+
+private const val MAX_NEWS_ITEMS = 100
 
 private inline fun <T> runCatchingNonCancel(block: () -> T): Result<T> = try {
     Result.success(block())

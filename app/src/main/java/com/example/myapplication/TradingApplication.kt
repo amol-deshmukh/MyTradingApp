@@ -2,6 +2,7 @@ package com.example.myapplication
 
 import android.app.Application
 import com.example.myapplication.data.TradingRepository
+import com.example.myapplication.data.remote.NewsStreamClient
 import com.example.myapplication.data.remote.PriceStreamClient
 import com.example.myapplication.data.remote.TradingApi
 import kotlinx.coroutines.CoroutineScope
@@ -48,6 +49,11 @@ class TradingApplication : Application() {
             .pingInterval(15, TimeUnit.SECONDS)
             .build()
 
+        // SSE: the server sends a heartbeat comment every 15s, so 30s of silence means a dead link.
+        val sseClient = baseClient.newBuilder()
+            .readTimeout(30, TimeUnit.SECONDS)
+            .build()
+
         val api = Retrofit.Builder()
             .baseUrl(BuildConfig.API_BASE_URL)
             .client(restClient)
@@ -58,6 +64,7 @@ class TradingApplication : Application() {
         repository = TradingRepository(
             api = api,
             priceStream = PriceStreamClient(wsClient, BuildConfig.WS_PRICES_URL, json),
+            newsStream = NewsStreamClient(sseClient, BuildConfig.SSE_NEWS_URL, json),
             scope = CoroutineScope(SupervisorJob() + Dispatchers.IO),
         )
     }

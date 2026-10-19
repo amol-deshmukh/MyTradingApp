@@ -5,11 +5,13 @@
  * Protocols:
  *   - REST/JSON over HTTP for request/response data (stock list, details, portfolio, orders).
  *   - WebSocket (RFC 6455) for streaming live prices (server push, ~1 tick/sec).
+ *   - Server-Sent Events for the market news feed (one-way push, resumable via Last-Event-ID).
  *
  * Simulated network conditions (env vars):
  *   LATENCY_MS    base delay added to every REST response and WS push   (default 1500)
  *   JITTER_MS     random extra delay 0..JITTER_MS                       (default 1000)
- *   FAILURE_RATE  probability a REST call fails with 503 / dropped conn (default 0.1)
+ *   FAILURE_RATE  probability a REST call fails with 503 / dropped conn (default 0.1);
+ *                 when > 0, SSE streams are also dropped every 30–90s to exercise resume
  *   EXTRA_STOCKS  number of synthetic stocks appended to the list, for perf tests (default 0)
  *   MOCK_PORT     (default 8080)
  *
@@ -222,6 +224,10 @@ const server = http.createServer(async (req, res) => {
   }
 
   try {
+    if (req.method === 'GET' && url.pathname === '/sse/news') {
+      return openNewsStream(req, res);
+    }
+
     if (req.method === 'GET' && url.pathname === '/api/v1/stocks') {
       return send(res, 200, { stocks: [...stocks.values()].map(quoteOf), asOf: Date.now() });
     }
@@ -338,8 +344,113 @@ server.on('upgrade', (req, socket) => {
   socket.on('error', drop);
 });
 
+// ---------------------------------------------------------------------------
+// Server-Sent Events (market news)
+// ---------------------------------------------------------------------------
+const NEWS_BACKLOG = 50;           // ring buffer kept for Last-Event-ID replay
+const NEWS_INITIAL = 20;           // items a brand-new client receives on connect
+const SSE_HEARTBEAT_MS = 15000;
+const news = [];                   // oldest first
+const sseClients = new Set();
+let newsSeq = 0;
+
+const pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
+const newsStocks = () => [...stocks.values()].filter((s) => s.sector !== 'Synthetic');
+
+const STOCK_NEWS = [
+  ['EARNINGS', 1, (s) => `${s.name} beats quarterly earnings estimates`, (s) => `Revenue and EPS came in ahead of consensus; ${s.symbol} guidance raised for the full year.`],
+  ['EARNINGS', -1, (s) => `${s.name} misses quarterly revenue estimates`, (s) => `Sales fell short of expectations as ${s.sector.toLowerCase()} demand softened.`],
+  ['ANALYST', 1, (s) => `Analyst upgrades ${s.name} to Buy`, (s) => `Price target raised to $${round2(s.price * 1.18)} on improving margins.`],
+  ['ANALYST', -1, (s) => `Analyst downgrades ${s.name} to Neutral`, () => 'Valuation cited after a strong run; target trimmed.'],
+  ['ANALYST', 0, (s) => `${s.name} initiated at Hold`, () => 'Coverage started with a balanced risk/reward view.'],
+];
+const MARKET_NEWS = [
+  ['Treasury yields edge higher ahead of Fed minutes', 'Investors weigh the path of rate cuts into next year.'],
+  ['Oil slips as inventories build more than expected', 'Energy names trade mixed in early action.'],
+  ['Dollar steadies after a volatile week', 'Currency moves keep multinational earnings in focus.'],
+  ['Small caps outperform as risk appetite returns', 'Breadth improves across sectors.'],
+  ['Jobless claims come in below forecasts', 'Labor market remains resilient despite tighter policy.'],
+];
+
+function publishNews(item, ts = Date.now()) {
+  const entry = { id: String(++newsSeq), ts, sentiment: 0, ...item };
+  news.push(entry);
+  if (news.length > NEWS_BACKLOG) news.shift();
+  for (const res of sseClients) sseWrite(res, entry);
+}
+
+function randomNews() {
+  if (Math.random() < 0.3) {
+    const [headline, summary] = pick(MARKET_NEWS);
+    return { category: 'MARKET', headline, summary };
+  }
+  const s = pick(newsStocks());
+  const [category, sentiment, headline, summary] = pick(STOCK_NEWS);
+  return { category, sentiment, symbol: s.symbol, headline: headline(s), summary: summary(s) };
+}
+
+// Price alerts fire each time a stock reaches a new whole-percent move on the day.
+function checkPriceAlerts() {
+  for (const s of newsStocks()) {
+    const pct = ((s.price - s.prevClose) / s.prevClose) * 100;
+    const level = Math.trunc(pct);
+    const prev = s.alertLevel ?? 0;
+    if (level === 0 || (Math.sign(level) === Math.sign(prev) && Math.abs(level) <= Math.abs(prev))) continue;
+    s.alertLevel = level;
+    const change = round2(s.price - s.prevClose);
+    publishNews({
+      category: 'PRICE_ALERT',
+      sentiment: Math.sign(level),
+      symbol: s.symbol,
+      headline: `${s.symbol} ${level > 0 ? 'up' : 'down'} ${Math.abs(level)}% today`,
+      summary: `Trading at $${s.price}, ${change >= 0 ? '+' : '-'}$${Math.abs(change)} on the session.`,
+    });
+  }
+}
+
+function sseWrite(res, entry) {
+  res.write(`id: ${entry.id}\nevent: news\ndata: ${JSON.stringify(entry)}\n\n`);
+}
+
+function openNewsStream(req, res) {
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-store',
+    Connection: 'keep-alive',
+  });
+
+  // Resume: replay only what the client missed. Unknown/future ids (e.g. after a server restart)
+  // are treated like a fresh client.
+  const lastId = Number(req.headers['last-event-id']);
+  const resuming = Number.isInteger(lastId) && lastId > 0 && lastId <= newsSeq;
+  const backlog = resuming ? news.filter((n) => Number(n.id) > lastId) : news.slice(-NEWS_INITIAL);
+  for (const n of backlog) sseWrite(res, n);
+  sseClients.add(res);
+  console.log(`SSE connected (${sseClients.size} clients)${resuming ? ` resumed after id=${lastId}, replayed ${backlog.length}` : ''}`);
+
+  // Comments keep idle proxies from closing the stream and let clients detect dead links.
+  const heartbeat = setInterval(() => res.write(': keep-alive\n\n'), SSE_HEARTBEAT_MS);
+  // Simulated flaky link: drop the stream so clients exercise Last-Event-ID resume.
+  const drop = FAILURE_RATE > 0 ? setTimeout(() => res.destroy(), 30000 + Math.random() * 60000) : null;
+
+  res.on('close', () => {
+    clearInterval(heartbeat);
+    clearTimeout(drop);
+    if (sseClients.delete(res)) console.log(`SSE disconnected (${sseClients.size} clients)`);
+  });
+}
+
+// Baseline alert levels so startup prices don't trigger a burst of alerts.
+for (const s of newsStocks()) s.alertLevel = Math.trunc(((s.price - s.prevClose) / s.prevClose) * 100);
+// Seed a little history so the feed isn't empty on first open.
+for (let i = 8; i > 0; i--) publishNews(randomNews(), Date.now() - i * 90_000);
+(function scheduleNews() {
+  setTimeout(() => { publishNews(randomNews()); scheduleNews(); }, 3000 + Math.random() * 4000);
+})();
+
 setInterval(() => {
   tick();
+  checkPriceAlerts();
   if (wsClients.size === 0) return;
   const msg = { type: 'ticks', ts: Date.now(), quotes: [...stocks.values()].map(quoteOf) };
   // Push is delayed too, emulating a slow downstream link.
@@ -350,5 +461,6 @@ server.listen(PORT, () => {
   console.log(`Mock trading server on http://localhost:${PORT}`);
   console.log(`  REST: /api/v1/stocks, /api/v1/stocks/:symbol, /api/v1/portfolio, POST /api/v1/orders`);
   console.log(`  WS:   ws://localhost:${PORT}/ws/prices`);
+  console.log(`  SSE:  http://localhost:${PORT}/sse/news`);
   console.log(`  latency=${LATENCY_MS}ms jitter=${JITTER_MS}ms failureRate=${FAILURE_RATE} stocks=${stocks.size}`);
 });

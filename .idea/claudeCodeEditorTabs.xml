@@ -5,7 +5,6 @@
     <option name="openSessionIds">
       <list>
         <option value="de2f6356-6237-448a-a238-ac7bdcd9eb37" />
-        <option value="30f05d0f-fb73-4279-8f04-f7f869753f1b" />
         <option value="0b8b1f47-e6f5-4c29-b906-aab205ec6d52" />
         <option value="f16b8b40-9189-4f17-bcc6-c3e1ad24feb1" />
         <option value="6c3f5818-5fca-49b0-bd90-6ecf72183d35" />
@@ -14,19 +13,17 @@
     <option name="sessionPaths">
       <map>
         <entry key="0b8b1f47-e6f5-4c29-b906-aab205ec6d52" value="/sessions/new" />
-        <entry key="30f05d0f-fb73-4279-8f04-f7f869753f1b" value="/sessions/b209dbce-a261-4a3e-ba7d-5d1226f31b52" />
         <entry key="6c3f5818-5fca-49b0-bd90-6ecf72183d35" value="/sessions/b209dbce-a261-4a3e-ba7d-5d1226f31b52" />
         <entry key="de2f6356-6237-448a-a238-ac7bdcd9eb37" value="/sessions/46474549-cb1e-4307-9d71-45ef7bc7a04a" />
-        <entry key="f16b8b40-9189-4f17-bcc6-c3e1ad24feb1" value="/sessions/new" />
+        <entry key="f16b8b40-9189-4f17-bcc6-c3e1ad24feb1" value="/sessions/4b71fb58-2b15-405a-8d00-6c940f9114e6" />
       </map>
     </option>
     <option name="sessionTitles">
       <map>
         <entry key="0b8b1f47-e6f5-4c29-b906-aab205ec6d52" value="Claude Code" />
-        <entry key="30f05d0f-fb73-4279-8f04-f7f869753f1b" value="build one trading Android app, for APIs, set up mo" />
         <entry key="6c3f5818-5fca-49b0-bd90-6ecf72183d35" value="build one trading Android app, for APIs, set up mo" />
         <entry key="de2f6356-6237-448a-a238-ac7bdcd9eb37" value="which claude" />
-        <entry key="f16b8b40-9189-4f17-bcc6-c3e1ad24feb1" value="Claude Code" />
+        <entry key="f16b8b40-9189-4f17-bcc6-c3e1ad24feb1" value="Also, If I have to build one new screen in app usi" />
       </map>
     </option>
   </component>

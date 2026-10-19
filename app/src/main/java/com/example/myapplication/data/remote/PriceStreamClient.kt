@@ -4,17 +4,14 @@ import androidx.tracing.trace
 import com.example.myapplication.data.model.ConnectionState
 import com.example.myapplication.data.model.PriceStreamMessage
 import kotlinx.coroutines.channels.awaitClose
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
-import kotlinx.coroutines.flow.channelFlow
 import kotlinx.serialization.json.Json
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
-import kotlin.random.Random
 
 sealed interface StreamEvent {
     data class Status(val state: ConnectionState) : StreamEvent
@@ -34,20 +31,7 @@ class PriceStreamClient(
     private val url: String,
     private val json: Json,
 ) {
-    fun events(): Flow<StreamEvent> = channelFlow {
-        var attempt = 0
-        while (true) {
-            send(StreamEvent.Status(if (attempt == 0) ConnectionState.CONNECTING else ConnectionState.RECONNECTING))
-            singleSession().collect { event ->
-                if (event is StreamEvent.Status && event.state == ConnectionState.LIVE) attempt = 0
-                send(event)
-            }
-            attempt++
-            send(StreamEvent.Status(if (attempt >= 3) ConnectionState.OFFLINE else ConnectionState.RECONNECTING))
-            val backoff = (1_000L shl (attempt - 1).coerceAtMost(5)).coerceAtMost(30_000L)
-            delay(backoff + Random.nextLong(backoff / 2))
-        }
-    }
+    fun events(): Flow<StreamEvent> = reconnectingStream(StreamEvent::Status, ::singleSession)
 
     /** One socket's lifetime. Completes when the socket closes or fails. */
     private fun singleSession(): Flow<StreamEvent> = callbackFlow {

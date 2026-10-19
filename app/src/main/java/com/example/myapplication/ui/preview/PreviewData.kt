@@ -1,6 +1,8 @@
 package com.example.myapplication.ui.preview
 
 import com.example.myapplication.data.model.Holding
+import com.example.myapplication.data.model.NewsCategory
+import com.example.myapplication.data.model.NewsItem
 import com.example.myapplication.data.model.StockDetail
 import com.example.myapplication.data.model.StockQuote
 import kotlin.math.sin
@@ -44,5 +46,15 @@ object PreviewData {
         Holding("AAPL", "Apple Inc.", 20, 210.15, 233.88),
         Holding("NVDA", "NVIDIA Corp.", 35, 118.40, 137.74),
         Holding("KO", "Coca-Cola Co.", 50, 72.20, 69.80),
+    )
+
+    private const val NOW = 1_760_000_000_000L
+
+    val news = listOf(
+        NewsItem("12", NOW, NewsCategory.PRICE_ALERT, "NVDA up 2% today", "Trading at $137.74, +$2.40 on the session.", "NVDA", 1),
+        NewsItem("11", NOW - 60_000, NewsCategory.ANALYST, "Analyst upgrades Apple Inc. to Buy", "Price target raised on stronger services growth.", "AAPL", 1),
+        NewsItem("10", NOW - 180_000, NewsCategory.MARKET, "Treasury yields edge higher ahead of Fed minutes", "Investors weigh the path of rate cuts into next year."),
+        NewsItem("9", NOW - 300_000, NewsCategory.EARNINGS, "Netflix Inc. misses quarterly revenue estimates", "Subscriber growth slowed in the latest quarter.", "NFLX", -1),
+        NewsItem("8", NOW - 420_000, NewsCategory.ANALYST, "Analyst downgrades Tesla Inc. to Neutral", "Valuation cited after a strong run.", "TSLA", -1),
     )
 }

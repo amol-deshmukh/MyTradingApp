@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ShowChart
 import androidx.compose.material.icons.filled.AccountBalanceWallet
+import androidx.compose.material.icons.filled.Newspaper
 import androidx.compose.material3.Icon
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
@@ -38,6 +39,8 @@ import com.example.myapplication.ui.detail.StockDetailScreen
 import com.example.myapplication.ui.detail.StockDetailViewModel
 import com.example.myapplication.ui.markets.MarketsScreen
 import com.example.myapplication.ui.markets.MarketsViewModel
+import com.example.myapplication.ui.news.NewsScreen
+import com.example.myapplication.ui.news.NewsViewModel
 import com.example.myapplication.ui.portfolio.PortfolioScreen
 import com.example.myapplication.ui.portfolio.PortfolioViewModel
 import com.example.myapplication.ui.theme.MyApplicationTheme
@@ -46,6 +49,7 @@ import kotlinx.serialization.Serializable
 
 @Serializable object MarketsRoute
 @Serializable object PortfolioRoute
+@Serializable object NewsRoute
 @Serializable data class StockDetailRoute(val symbol: String)
 
 @OptIn(ExperimentalComposeUiApi::class)
@@ -77,6 +81,7 @@ class MainActivity : ComponentActivity() {
                                 listOf(
                                     Triple(MarketsRoute, "Markets", Icons.AutoMirrored.Filled.ShowChart),
                                     Triple(PortfolioRoute, "Portfolio", Icons.Default.AccountBalanceWallet),
+                                    Triple(NewsRoute, "News", Icons.Default.Newspaper),
                                 ).forEach { (route, label, icon) ->
                                     NavigationBarItem(
                                         selected = destination?.hasRoute(route::class) == true,
@@ -110,6 +115,12 @@ class MainActivity : ComponentActivity() {
                             PortfolioScreen(
                                 viewModel = viewModel(factory = viewModelFactory { initializer { PortfolioViewModel(repository) } }),
                                 onHoldingClick = { navController.navigate(StockDetailRoute(it)) },
+                            )
+                        }
+                        composable<NewsRoute> {
+                            NewsScreen(
+                                viewModel = viewModel(factory = viewModelFactory { initializer { NewsViewModel(repository) } }),
+                                onSymbolClick = { navController.navigate(StockDetailRoute(it)) },
                             )
                         }
                         composable<StockDetailRoute> { entry ->
