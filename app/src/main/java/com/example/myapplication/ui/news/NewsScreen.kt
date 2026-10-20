@@ -29,7 +29,9 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
@@ -77,10 +79,18 @@ fun NewsScreen(
 
             val listState = rememberLazyListState()
             // Items are prepended as they stream in. If the user is reading the top of the feed,
-            // follow new items; if they've scrolled down, leave their position alone.
+            // follow new items; if they've scrolled down, leave their position alone. LazyColumn
+            // keeps the previously visible item anchored by key, so by now the old top row has
+            // moved down by the number of prepended items; compare against that, not against 0.
             val newestId = state.items.firstOrNull()?.id
+            var previousNewestId by remember { mutableStateOf<String?>(null) }
             LaunchedEffect(newestId) {
-                if (listState.firstVisibleItemIndex <= 1) listState.animateScrollToItem(0)
+                val prepended = state.items.indexOfFirst { it.id == previousNewestId }
+                previousNewestId = newestId
+                // -1: first load or filter change, so start at the top.
+                if (prepended == -1 || listState.firstVisibleItemIndex <= prepended) {
+                    listState.animateScrollToItem(0)
+                }
             }
 
             LazyColumn(Modifier.fillMaxSize().testTag("news_list"), state = listState) {
